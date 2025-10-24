@@ -1,21 +1,38 @@
+#==============================================================================
+# IMPORTS AND DEPENDENCIES
+#==============================================================================
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import io
 
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 from typing import TypedDict, Optional
 from langgraph.graph import StateGraph, END
 
+# Helper: convert fig -> PNG bytes
+def fig_to_png_bytes(fig):
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    buf.seek(0)
+    return buf.read()
 
-# Streamlit app configuration
+
+#==============================================================================
+# STREAMLIT APP CONFIGURATION
+#==============================================================================
+# Configure the Streamlit app with title and wide layout
 st.set_page_config(page_title="AI-Powered Data Exploration Assistant", layout="wide")
 st.title("📊 AI-Powered Data Exploration")
 
-# Load OpenAI API key
-# For local dev
+
+#==============================================================================
+# OPENAI API KEY SETUP
+#==============================================================================
+# Load OpenAI API key from environment variables for local development
 from dotenv import load_dotenv
 import os
 load_dotenv()  
@@ -24,16 +41,21 @@ if not api_key or not api_key.startswith("sk-"):
     st.warning("Please provide a valid OpenAI API key in .env as OPENAI_API_KEY to continue.")
     st.stop()
 
-# For deployment (e.g., Streamlit Cloud)
+# Alternative setup for deployment (e.g., Streamlit Cloud) - currently commented out
 # api_key = st.secrets.get("OPENAI_API_KEY")
 if not api_key or not api_key.startswith("sk-"):
     st.warning("Please provide a valid OpenAI API key in st.secrets as OPENAI_API_KEY to continue.")
     st.stop()
 
-# Select AI model
-ai_model = "gpt-5-mini" # "gpt-5-mini", "gpt-5"
 
-# Initialize LLM models for different tasks
+#==============================================================================
+# AI MODEL CONFIGURATION
+#==============================================================================
+# Select the AI model to use for all LLM operations
+ai_model = "gpt-5-mini" # Options: "gpt-5-mini", "gpt-5"
+
+# Initialize separate LLM instances for different workflow tasks
+# Each instance can have different temperature settings for task-specific behavior
 llm_plan = ChatOpenAI(
     model=ai_model,
     temperature=1,
@@ -59,70 +81,103 @@ llm_explainer = ChatOpenAI(
 )
 
 
-# File upload and data preview
+#==============================================================================
+# USER INTERFACE FOR DATA INPUT
+#==============================================================================
+# File upload widget for CSV files
 uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 if uploaded_file:
+    # Load the uploaded CSV file into a pandas DataFrame
     df = pd.read_csv(uploaded_file)
     st.subheader("📄 Data Preview")
+    # Allow user to control how many rows to preview
     n_rows = st.slider("Number of rows to preview:", 5, 100, 5, step=5)
     st.write(df.head(n_rows))
 else:
     df = None
 
+# Text area for optional dataset context (helps AI understand the data better)
 data_context = st.text_area(
     "Optional: Provide context about your dataset (e.g., how was data collected, what columns mean, measurement scales, units, etc.)",
     ""
 )
 
+# Text area for user instructions/questions about the data
 instructions = st.text_area(
     "Enter your question or instructions for data visualization:",
     "Example: Create scatterplot with engagement and job satisfaction"
 )
 
 
-# State management for the LangGraph workflow
+#==============================================================================
+# STATE MANAGEMENT FOR LANGGRAPH WORKFLOW
+#==============================================================================
+# Define the state structure that flows through the LangGraph workflow
+# This contains all data and intermediate results needed for the analysis pipeline
 class VizState(TypedDict):
-    schema: str
-    instructions: str
-    data_context: str
-    plan: Optional[str]
-    code: Optional[str]
-    explanation: Optional[str]
-    df: Optional[object]
-    fig: Optional[object]
-    error: Optional[str]
-    narrative_code: Optional[str]
-    narrative_text: Optional[str]
-    retry_count_exec: int
-    retry_count_narrative: int
+    schema: str                    # Dataset column names and types
+    instructions: str              # User's request/question
+    data_context: str             # Optional context about the dataset
+    plan: Optional[str]           # Generated analysis plan
+    code: Optional[str]           # Generated Python code for visualization
+    explanation: Optional[str]    # Human-readable explanation of results
+    df: Optional[object]          # The pandas DataFrame
+    fig: Optional[object]         # The matplotlib Figure object
+    error: Optional[str]          # Any execution errors
+    narrative_code: Optional[str] # Code for generating narrative text
+    narrative_text: Optional[str] # Generated narrative with computed values
+    retry_count_exec: int         # Number of code execution retry attempts
+    retry_count_narrative: int    # Number of narrative generation retry attempts
 
 
-# Safe code execution helpers
+#==============================================================================
+# SAFE CODE EXECUTION HELPERS
+#==============================================================================
 def run_exec(code: str, df: pd.DataFrame) -> plt.Figure:
-    # Remove display and show commands to prevent conflicts
+    """
+    Safely execute visualization code and return the matplotlib Figure.
+    Removes potentially problematic display commands before execution.
+    """
+    # Remove display and show commands to prevent conflicts with Streamlit
     safe_code = (
         code.replace("display(fig)", "")
             .replace("plt.show()", "")
             .replace("display(", "# display(")
     )
+    # Create execution environment with necessary libraries and data
     exec_env = {"df": df, "sns": sns, "plt": plt, "pd": pd, "np": np}
     exec(safe_code, exec_env)
     return exec_env["fig"]
 
 def run_narrative(code: str, df: pd.DataFrame) -> str:
+    """
+    Safely execute narrative generation code and return the narrative string.
+    """
     exec_env = {"df": df, "sns": sns, "plt": plt, "pd": pd, "np": np}
     exec(code, exec_env)
     return exec_env["narrative"]
 
 
-# Workflow nodes
+#==============================================================================
+# WORKFLOW NODES - MAIN ANALYSIS PIPELINE
+#==============================================================================
+
 def planner_node(state: VizState) -> VizState:
+    """
+    Generate an initial analysis plan based on user request and dataset schema.
+    This is the first step that creates a high-level strategy for the analysis.
+    """
     with st.spinner("📝 Generating plan..."):
         plan_msg = llm_plan.invoke(f"""
-            Dataset schema: {state['schema']}
-            Dataset context: {state['data_context']}
-            User request: {state['instructions']}
+            Dataset schema: 
+            {state['schema']}
 
+            Dataset context: 
+            {state['data_context']}
+
+            User request: 
+            {state['instructions']}
+            
             Task: Break down the steps for both data cleaning and wrangling (pandas) and visualization (seaborn + matplotlib) that would fulfill the user's request - for example, creating a data visualization, answering a question, providing insights, or helping test a hypothesis.
             Requirements:
             - Wrangling must operate on the input DataFrame df
@@ -136,14 +191,59 @@ def planner_node(state: VizState) -> VizState:
         state["plan"] = plan_msg.content
     return state
 
+def reflection_node(state: VizState) -> VizState:
+    """
+    Review and improve the initial plan by checking for appropriateness and completeness.
+    This quality control step helps ensure the plan aligns well with user needs.
+    """
+    with st.spinner("🪞 Reflecting on plan quality..."):
+        reflection_msg = llm_plan.invoke(f"""
+            Dataset schema:
+            {state['schema']}
 
+            Dataset context:
+            {state['data_context']}
+
+            User request:
+            "{state['instructions']}"
+
+            Initial analysis and visualization plan:
+            ```
+            {state['plan']}
+            ```
+
+            Task:
+            Critically reflect on the quality and appropriateness of this plan.
+            - Check whether the plan aligns well with the user's request.
+            - Verify if the visualization types are appropriate for the dataset schema.
+            - Check if variable selections make sense and are valid according to the schema.
+            - Evaluate whether the plan is logically coherent and sufficient to answer the question.
+            - Identify missing steps (e.g., grouping, aggregation, filtering, labeling, clarity).
+            - If the plan is already strong, affirm that.
+            - If improvements are needed, rewrite the plan to make it stronger.
+
+            Output only the final, improved plan (no explanations).
+        """)
+        state["plan"] = reflection_msg.content.strip()
+    return state
+
+
+#==============================================================================
+# CODE GENERATION AND EXECUTION NODES
+#==============================================================================
+
+# Pydantic model to ensure structured output from LLM for code generation
 class ExecCode(BaseModel):
     code: str
 
+# LLM instance with structured output for reliable code generation
 exec_llm = llm_exec.with_structured_output(ExecCode)
 
-
 def executor_node(state: VizState) -> VizState:
+    """
+    Generate Python code based on the plan and execute it to create visualizations.
+    This is where the actual data analysis and plotting happens.
+    """
     with st.spinner("⚙️ Generating and executing code..."):
         exec_plan = exec_llm.invoke(f"""
             Context plan:
@@ -167,6 +267,7 @@ def executor_node(state: VizState) -> VizState:
         code = exec_plan.code
         state["code"] = code
 
+        # Attempt to execute the generated code
         try:
             state["fig"] = run_exec(code, state["df"])
             state["error"] = None
@@ -174,8 +275,11 @@ def executor_node(state: VizState) -> VizState:
             state["error"] = str(e)
     return state
 
-
 def repair_exec_node(state: VizState) -> VizState:
+    """
+    Attempt to fix code execution errors by generating corrected code.
+    Includes retry logic with a maximum of 3 attempts.
+    """
     if not state["error"]:
         return state
 
@@ -209,6 +313,7 @@ def repair_exec_node(state: VizState) -> VizState:
         repaired_code = repair_msg.code
         state["code"] = repaired_code
 
+        # Attempt to execute the repaired code
         try:
             state["fig"] = run_exec(repaired_code, state["df"])
             state["error"] = None
@@ -217,12 +322,22 @@ def repair_exec_node(state: VizState) -> VizState:
     return state
 
 
+#==============================================================================
+# NARRATIVE GENERATION NODES
+#==============================================================================
+
+# Pydantic model for structured narrative code output
 class NarrativeCode(BaseModel):
     code: str
 
+# LLM instance for narrative generation with structured output
 narrative_llm = llm_narrative.with_structured_output(NarrativeCode)
 
 def narrative_node(state: VizState) -> VizState:
+    """
+    Generate code that creates a narrative text with computed statistics.
+    This provides data-driven insights embedded in readable text.
+    """
     with st.spinner("📜 Generating narrative code..."):
         narrative_plan = narrative_llm.invoke(f"""
             User request: {state['instructions']}
@@ -248,6 +363,7 @@ def narrative_node(state: VizState) -> VizState:
 
         state["narrative_code"] = narrative_plan.code
 
+        # Execute the narrative generation code
         try:
             state["narrative_text"] = run_narrative(state["narrative_code"], state["df"])
             state["error"] = None
@@ -255,8 +371,11 @@ def narrative_node(state: VizState) -> VizState:
             state["error"] = str(e)
     return state
 
-
 def repair_narrative_node(state: VizState) -> VizState:
+    """
+    Repair failed narrative generation code with retry logic.
+    Similar to repair_exec_node but specifically for narrative generation.
+    """
     if not state["error"]:
         return state
 
@@ -287,6 +406,7 @@ def repair_narrative_node(state: VizState) -> VizState:
         repaired_code = repair_msg.code
         state["narrative_code"] = repaired_code
 
+        # Attempt to execute the repaired narrative code
         try:
             state["narrative_text"] = run_narrative(repaired_code, state["df"])
             state["error"] = None
@@ -294,8 +414,11 @@ def repair_narrative_node(state: VizState) -> VizState:
             state["error"] = str(e)
     return state
 
-
 def explainer_node(state: VizState) -> VizState:
+    """
+    Generate a human-readable explanation of the analysis results.
+    This creates the final interpretation that users will see.
+    """
     with st.spinner("💬 Generating explanation..."):
         explain_msg = llm_explainer.invoke(f"""
             User request: {state['instructions']}
@@ -316,49 +439,69 @@ def explainer_node(state: VizState) -> VizState:
     return state
 
 
-# Build the LangGraph workflow
+#==============================================================================
+# LANGGRAPH WORKFLOW CONSTRUCTION
+#==============================================================================
+# Build the complete analysis workflow using LangGraph
 workflow = StateGraph(VizState)
 
+# Add all workflow nodes
 workflow.add_node("planner", planner_node)
+workflow.add_node("reflection", reflection_node) 
 workflow.add_node("executor", executor_node)
 workflow.add_node("repair_exec", repair_exec_node)
 workflow.add_node("narrative", narrative_node)
 workflow.add_node("repair_narrative", repair_narrative_node)
 workflow.add_node("explainer", explainer_node)
 
+# Define the workflow flow - linear progression with error handling branches
 workflow.set_entry_point("planner")
-workflow.add_edge("planner", "executor")
+workflow.add_edge("planner", "reflection")  
+workflow.add_edge("reflection", "executor") 
 
-# Conditional routing based on error states
+# Conditional flow for code execution with error handling
 workflow.add_conditional_edges(
     "executor",
     lambda state: "repair_exec" if state.get("error") else "narrative"
 )
 
+# Retry logic for failed code execution
 workflow.add_conditional_edges(
     "repair_exec",
     lambda state: "executor" if state.get("error") and state["retry_count_exec"] <= 3 else "narrative"
 )
 
+# Conditional flow for narrative generation with error handling
 workflow.add_conditional_edges(
     "narrative",
     lambda state: "repair_narrative" if state.get("error") else "explainer"
 )
 
+# Retry logic for failed narrative generation
 workflow.add_conditional_edges(
     "repair_narrative",
     lambda state: "narrative" if state.get("error") and state["retry_count_narrative"] <= 3 else "explainer"
 )
 
+# Final step - always end with explanation
 workflow.add_edge("explainer", END)
 
+# Compile the workflow into an executable application
 app = workflow.compile()
 
 
-# Main execution and UI rendering
+#==============================================================================
+# MAIN EXECUTION AND RESULTS DISPLAY
+#==============================================================================
+# Execute the complete analysis pipeline when user clicks the button
+if "viz_result" not in st.session_state:
+    st.session_state.viz_result = None
+    
 if df is not None and instructions and st.button("Generate Insights"):
+    # Prepare the dataset schema for the AI models
     schema_str = ", ".join(f"{col}:{dtype}" for col, dtype in df.dtypes.items())
 
+    # Initialize the workflow state with user inputs and empty results
     state: VizState = {
         "schema": schema_str,
         "instructions": instructions,
@@ -375,9 +518,19 @@ if df is not None and instructions and st.button("Generate Insights"):
         "retry_count_narrative": 0,
     }
 
+    # Execute the complete workflow
     result = app.invoke(state)
 
-    # Hidden debug sections (commented out for production UI)
+    # 🔑 Convert fig to PNG bytes if it exists
+    if result["fig"]:
+        result["fig_png"] = fig_to_png_bytes(result["fig"])
+    else:
+        result["fig_png"] = None
+
+    st.session_state.viz_result = result
+
+    # DEBUG SECTIONS - Hidden for production UI but useful for development
+    # Uncomment these sections to see intermediate workflow results
     # if result["plan"]:
     #     with st.expander("📝 Plan"):
     #         st.code(result["plan"], language="markdown")
@@ -394,12 +547,17 @@ if df is not None and instructions and st.button("Generate Insights"):
     #     with st.expander("📖 Narrative Text"):
     #         st.write(result["narrative_text"])
 
-    if result["fig"]:
-        st.pyplot(result["fig"], clear_figure=True, use_container_width=False)
+# MAIN RESULTS DISPLAY
+# ---- Show persisted results (if any) ----
+if st.session_state.viz_result:
+    result = st.session_state.viz_result
 
-    if result["explanation"]:
+    if result.get("fig_png"):
+        st.image(result["fig_png"], use_container_width=True)
+
+    if result.get("explanation"):
         st.subheader("💡 Explanation")
         st.write(result["explanation"])
 
-    if result["error"]:
+    if result.get("error"):
         st.error(f"Execution still failing: {result['error']}")

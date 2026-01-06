@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import io
 
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel
 from typing import TypedDict, Optional
 from langgraph.graph import StateGraph, END
@@ -20,6 +20,23 @@ def fig_to_png_bytes(fig):
     buf.seek(0)
     return buf.read()
 
+# Helper: extract text from Gemini response content
+def extract_text_from_content(content):
+    """Extract text from Gemini's response content which can be a string, list, or list of dicts."""
+    if isinstance(content, str):
+        return content
+    elif isinstance(content, list):
+        texts = []
+        for item in content:
+            if isinstance(item, str):
+                texts.append(item)
+            elif isinstance(item, dict) and 'text' in item:
+                texts.append(item['text'])
+            elif hasattr(item, 'text'):
+                texts.append(item.text)
+        return "".join(texts)
+    return str(content)
+
 
 #==============================================================================
 # STREAMLIT APP CONFIGURATION
@@ -30,21 +47,19 @@ st.title("📊 AI-Powered Data Exploration")
 
 
 #==============================================================================
-# OPENAI API KEY SETUP
+# GEMINI API KEY SETUP
 #==============================================================================
-# Load OpenAI API key from environment variables for local development
+# Load Gemini API key from environment variables for local development
 from dotenv import load_dotenv
 import os
 load_dotenv()  
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key or not api_key.startswith("sk-"):
-    st.warning("Please provide a valid OpenAI API key in .env as OPENAI_API_KEY to continue.")
-    st.stop()
+api_key = os.getenv("GEMINI_API_KEY")
 
 # Alternative setup for deployment (e.g., Streamlit Cloud) - currently commented out
-# api_key = st.secrets.get("OPENAI_API_KEY")
-if not api_key or not api_key.startswith("sk-"):
-    st.warning("Please provide a valid OpenAI API key in st.secrets as OPENAI_API_KEY to continue.")
+# api_key = st.secrets.get("GEMINI_API_KEY")
+
+if not api_key or not api_key.startswith("AIza"):
+    st.warning("Please provide a valid Gemini API key in .env or st.secrets as GEMINI_API_KEY to continue.")
     st.stop()
 
 
@@ -52,32 +67,32 @@ if not api_key or not api_key.startswith("sk-"):
 # AI MODEL CONFIGURATION
 #==============================================================================
 # Select the AI model to use for all LLM operations
-ai_model = "gpt-5-mini" # Options: "gpt-5-mini", "gpt-5"
+ai_model = "gemini-3-flash-preview"
 
 # Initialize separate LLM instances for different workflow tasks
 # Each instance can have different temperature settings for task-specific behavior
-llm_plan = ChatOpenAI(
+llm_plan = ChatGoogleGenerativeAI(
     model=ai_model,
     temperature=1,
-    openai_api_key=api_key
+    google_api_key=api_key
 )
 
-llm_exec = ChatOpenAI(
+llm_exec = ChatGoogleGenerativeAI(
     model=ai_model,
     temperature=1,
-    openai_api_key=api_key
+    google_api_key=api_key
 )
 
-llm_narrative = ChatOpenAI(
+llm_narrative = ChatGoogleGenerativeAI(
     model=ai_model,
     temperature=1,
-    openai_api_key=api_key
+    google_api_key=api_key
 )
 
-llm_explainer = ChatOpenAI(
+llm_explainer = ChatGoogleGenerativeAI(
     model=ai_model,
     temperature=1,
-    openai_api_key=api_key
+    google_api_key=api_key
 )
 
 
@@ -188,7 +203,7 @@ def planner_node(state: VizState) -> VizState:
             - Do more complex analysis only if it clearly adds value or if your explictly asked to do so by a user.
             - Apply good data visualization principles: choose the right chart for the data, keep visuals clear and uncluttered, label everything, use accessible colors, highlight the key insight, and avoid distortion or chartjunk.
         """)
-        state["plan"] = plan_msg.content
+        state["plan"] = extract_text_from_content(plan_msg.content)
     return state
 
 def reflection_node(state: VizState) -> VizState:
@@ -224,7 +239,7 @@ def reflection_node(state: VizState) -> VizState:
 
             Output only the final, improved plan (no explanations).
         """)
-        state["plan"] = reflection_msg.content.strip()
+        state["plan"] = extract_text_from_content(reflection_msg.content).strip()
     return state
 
 
@@ -435,7 +450,7 @@ def explainer_node(state: VizState) -> VizState:
             - Make it concise and clear.
             - Do not output code. Write only text.
         """)
-        state["explanation"] = explain_msg.content.strip()
+        state["explanation"] = extract_text_from_content(explain_msg.content).strip()
     return state
 
 

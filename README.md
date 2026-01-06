@@ -4,7 +4,7 @@
 
 🕵️‍♀️ But to challenge my assumptions and get a better sense of what today’s genAIs and agentic frameworks can actually do, I decided to experiment a bit and built a simple AI-driven assistant for data-insight democratization, that lets non-technical users explore data through basic tools for visualization and descriptive and inferential statistics, all using plain language.
 
-🤖 For that purpose I built a simple app consisting of several agent-like components (powered by the ChatGPT-5-mini model), each responsible for a different aspect of the insight-generation process and using inputs from the others:
+🤖 For that purpose I built a simple app consisting of several agent-like components (powered by the GPT-5-mini model), each responsible for a different aspect of the insight-generation process and using inputs from the others:
 
 * one component plans the analysis steps based on the user’s request, data characteristics, and broader context,
 * another evaluates the quality of the proposed plan and suggests adjustments if necessary,
@@ -21,4 +21,5 @@
 
 *The attached video above shows the app in action, answering a question about the employee attitudes that are the most predictive of attrition using the <a href="https://www.kaggle.com/datasets/pavansubhasht/ibm-hr-analytics-attrition-dataset" target="_blank">IBM Employee Attrition dataset</a>.*
 
-
+----
+*Update*: After Google's release of Gemini 3 Flash Preview, which demonstrates a superior performance-to-price ratio, I replaced GPT-5-mini with this model. Its higher "intelligence" is readily apparent in the quality of the app's outputs - specifically through better chart selection and more nuanced data interpretations. It's a perfect example of the ongoing commoditization of "intelligence."

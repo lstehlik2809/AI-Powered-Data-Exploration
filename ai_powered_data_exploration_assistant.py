@@ -83,7 +83,7 @@ if not api_key or not api_key.startswith("AIza"):
 # AI MODEL CONFIGURATION
 #==============================================================================
 # Select the AI model to use for all LLM operations
-ai_model = "gemini-3.7-flash"
+ai_model = "gemini-3.8-flash"
 
 # Fix 4 + Fix 7: task-specific temperatures and explicit resilience settings.
 TEMP_CODE = 0.2      # executor / repair / narrative code-gen: near-deterministic
